@@ -50,8 +50,26 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Setup Android SDK (lisensi otomatis diterima)
-        uses: android-actions/setup-android@v3
+      - name: Siapkan Android SDK bawaan runner (lisensi + NDK)
+        shell: bash
+        run: |
+          set -eo pipefail
+          echo "ANDROID_HOME=${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          SDKM="$(command -v sdkmanager || true)"
+          if [ -z "$SDKM" ]; then
+            SDKM="$(ls -d "${ANDROID_HOME:-/usr/local/lib/android/sdk}"/cmdline-tools/*/bin/sdkmanager | sort -V | tail -1)"
+          fi
+          echo "sdkmanager: $SDKM"
+          set +o pipefail
+          yes | "$SDKM" --licenses > /dev/null || true
+          set -o pipefail
+          NDK_VER="$(grep -E '^ndk_version' android/gradle.properties | head -1 | cut -d= -f2 | tr -d ' \r' || true)"
+          if [ -n "$NDK_VER" ]; then
+            echo "Memasang NDK $NDK_VER"
+            "$SDKM" "ndk;$NDK_VER"
+          else
+            echo "ndk_version tidak ditemukan di gradle.properties; Gradle akan mengunduh sendiri."
+          fi
 
       - name: Setup Gradle (cache)
         uses: gradle/actions/setup-gradle@v4
