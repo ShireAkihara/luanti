@@ -1,14 +1,18 @@
 apply plugin: 'com.android.application'
 
+// LUANTICRAFT-BEGIN (dikelola oleh tools/luanticraft/apply_branding.py)
+def lcProps = new Properties()
+file("${rootDir}/../luanticraft.properties").withInputStream { lcProps.load(it) }
+// LUANTICRAFT-END
 android {
 	ndkVersion "$ndk_version"
 	defaultConfig {
-		applicationId 'net.minetest.minetest'
+		applicationId lcProps.getProperty('app.applicationId')
 		minSdkVersion 21
 		compileSdk = 36
 		targetSdkVersion 36
-		versionName "${versionMajor}.${versionMinor}.${versionPatch}"
-		versionCode versionMajor * 1000000 + versionMinor * 10000 + versionPatch * 100 + versionBuild
+		versionName lcProps.getProperty('app.versionName')
+		versionCode lcProps.getProperty('app.versionCode').toInteger()
 	}
 
 	buildFeatures {
@@ -44,7 +48,7 @@ android {
 		abi {
 			enable true
 			reset()
-			include 'armeabi-v7a', 'arm64-v8a', 'x86', 'x86_64'
+			include 'arm64-v8a', 'armeabi-v7a'
 		}
 	}
 
@@ -109,6 +113,10 @@ tasks.register("prepareAssets") {
 			from "${localeFolder}" into "${assetsFolder}/locale"
 		}
 
+		// LUANTICRAFT-GAME: sematkan base game ke APK
+		copy {
+		        from "${projRoot}/games/${lcProps.getProperty('basegame.id')}" into "${assetsFolder}/games/${lcProps.getProperty('basegame.id')}"
+		}
 		file("${assetsFolder}/.nomedia").text = ""
 	}
 }

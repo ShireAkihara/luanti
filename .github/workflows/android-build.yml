@@ -1,0 +1,138 @@
+name: Android Build (LuantiCraft)
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  workflow_dispatch:
+
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write   # hanya dipakai untuk GitHub Release saat push tag v*
+
+jobs:
+  build-apk:
+    name: Build & sign APK
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    env:
+      # Opsional: keystore permanen lewat GitHub Secrets
+      KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+      KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+      KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+      KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Bebaskan ruang disk
+        run: |
+          sudo rm -rf /usr/share/dotnet /opt/ghc /usr/local/share/boost || true
+          df -h /
+
+      - name: Pasang gettext (msgfmt untuk terjemahan)
+        run: sudo apt-get update && sudo apt-get install -y gettext
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Setup JDK 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK (lisensi otomatis diterima)
+        uses: android-actions/setup-android@v3
+
+      - name: Setup Gradle (cache)
+        uses: gradle/actions/setup-gradle@v4
+
+      - name: Muat luanticraft.properties ke environment
+        shell: bash
+        run: |
+          python3 - <<'PY' >> "$GITHUB_ENV"
+          import pathlib
+          for line in pathlib.Path("luanticraft.properties").read_text(encoding="utf-8").splitlines():
+              line = line.strip()
+              if line and not line.startswith("#") and "=" in line:
+                  k, v = line.split("=", 1)
+                  print("LC_" + k.strip().replace(".", "_").upper() + "=" + v.strip())
+          PY
+
+      - name: Sematkan base game (Mineclonia) ke games/
+        run: python3 tools/luanticraft/fetch_basegame.py
+
+      - name: Verifikasi rebranding sudah di-commit
+        run: |
+          grep -q "LUANTICRAFT-BEGIN" android/app/build.gradle \
+            || { echo "::error::Jalankan 'python tools/luanticraft/apply_branding.py' lalu commit hasilnya"; exit 1; }
+          grep -q "LUANTICRAFT-GAME" android/app/build.gradle \
+            || { echo "::error::Patch pengemasan base game belum ada di build.gradle"; exit 1; }
+          test -f "games/${LC_BASEGAME_ID}/game.conf"
+
+      - name: Build APK release (NDK C++ + Gradle)
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleRelease --no-daemon --stacktrace
+
+      - name: Align & tanda tangani APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          BT="$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)"
+          mkdir -p dist
+          KS="$RUNNER_TEMP/luanticraft.jks"
+
+          if [ -n "${KEYSTORE_B64:-}" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$KS"
+            ALIAS="$KEY_ALIAS"; SPASS="$KEYSTORE_PASSWORD"; KPASS="${KEY_PASSWORD:-$KEYSTORE_PASSWORD}"
+            echo "Memakai keystore permanen dari secrets."
+          else
+            echo "::warning::Secrets keystore tidak ada. Memakai keystore sementara: APK bisa dipasang, tetapi tidak bisa meng-update build lain."
+            ALIAS=luanticraft; SPASS=luanticraft; KPASS=luanticraft
+            keytool -genkeypair -keystore "$KS" -alias "$ALIAS" -keyalg RSA -keysize 4096 \
+              -validity 10000 -storepass "$SPASS" -keypass "$KPASS" \
+              -dname "CN=LuantiCraft CI, O=LuantiCraft, C=ID"
+          fi
+
+          mapfile -t APKS < <(find android/app/build/outputs/apk -type f -name '*.apk')
+          if [ "${#APKS[@]}" -eq 0 ]; then
+            echo "::error::Tidak ada APK yang dihasilkan Gradle"; exit 1
+          fi
+
+          for APK in "${APKS[@]}"; do
+            base="$(basename "$APK" .apk)"
+            OUT="dist/${LC_APP_NAME}-${LC_APP_VERSIONNAME}-${GITHUB_SHA::7}-${base}.apk"
+            "$BT/zipalign" -p -f 4 "$APK" "$RUNNER_TEMP/${base}-aligned.apk"
+            "$BT/apksigner" sign --ks "$KS" --ks-key-alias "$ALIAS" \
+              --ks-pass "pass:$SPASS" --key-pass "pass:$KPASS" \
+              --out "$OUT" "$RUNNER_TEMP/${base}-aligned.apk"
+            "$BT/apksigner" verify "$OUT"
+            echo "Dihasilkan: $OUT"
+          done
+          ls -lh dist
+
+      - name: Upload APK sebagai artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.LC_APP_NAME }}-apk-${{ github.sha }}
+          path: dist/*.apk
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Buat GitHub Release (hanya untuk tag v*)
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.apk
+          generate_release_notes: true

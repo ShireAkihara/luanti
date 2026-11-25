@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <string name="label">Luanti</string>
+    <string name="label">LuantiCraft</string>
     <string name="loading">Ladataan…</string>
     <string name="notification_channel_name">Yleinen ilmoitus</string>
     <string name="notification_channel_description">Ilmoitukset Luantilta</string>
